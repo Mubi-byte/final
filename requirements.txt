@@ -12,3 +12,4 @@ bcrypt
 python-dotenv
 azure-search-documents
 docx2pdf
+python-multipart
