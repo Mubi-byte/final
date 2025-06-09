@@ -148,42 +148,78 @@ class ChatInput(BaseModel):
     user_input: str
     history: list = []
 
-def convert_uploaded_file(file: UploadFile) -> Optional[str]:
+async def convert_uploaded_file(file: UploadFile) -> Optional[str]:
     """Convert uploaded Word doc to PDF and return temp PDF path"""
-    if not file.filename.lower().endswith(('.docx', '.doc')):
+    if not file.filename or not file.filename.lower().endswith(('.docx', '.doc')):
         return None
 
+    temp_docx_path = None
+    temp_pdf_path = None
+    
     try:
-        # Create temp files
+        # Create temp files with proper extensions
         with tempfile.NamedTemporaryFile(suffix='.docx', delete=False) as temp_docx:
             temp_docx_path = temp_docx.name
-            temp_docx.write(file.file.read())
+            
+            # Reset file pointer and read content
+            await file.seek(0)
+            content = await file.read()
+            temp_docx.write(content)
 
         temp_pdf_path = temp_docx_path.replace('.docx', '.pdf')
         
         # Convert to PDF
         convert(temp_docx_path, temp_pdf_path)
         
+        # Verify PDF was created
+        if not os.path.exists(temp_pdf_path):
+            raise Exception("PDF conversion failed - output file not created")
+        
         # Clean up the original docx
         os.unlink(temp_docx_path)
         
         return temp_pdf_path
+        
     except Exception as e:
         print(f"Conversion error: {str(e)}")
-        if 'temp_docx_path' in locals() and os.path.exists(temp_docx_path):
-            os.unlink(temp_docx_path)
-        if 'temp_pdf_path' in locals() and os.path.exists(temp_pdf_path):
-            os.unlink(temp_pdf_path)
+        
+        # Clean up temp files
+        if temp_docx_path and os.path.exists(temp_docx_path):
+            try:
+                os.unlink(temp_docx_path)
+            except:
+                pass
+                
+        if temp_pdf_path and os.path.exists(temp_pdf_path):
+            try:
+                os.unlink(temp_pdf_path)
+            except:
+                pass
+                
         return None
 
 @app.post("/upload")
 async def upload_file(file: UploadFile = File(...)):
-    file_ext = file.filename.lower().split('.')[-1]
-    
     try:
+        # Validate file type first
+        if not file.filename:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "No filename provided"}
+            )
+        
+        file_ext = file.filename.lower().split('.')[-1]
+        if file_ext not in ('pdf', 'docx', 'doc'):
+            return JSONResponse(
+                status_code=400,
+                content={"error": "Only PDF and Word documents are allowed"}
+            )
+
         # Handle Word documents
         if file_ext in ('docx', 'doc'):
-            pdf_path = convert_uploaded_file(file)
+            # Reset file pointer before reading
+            await file.seek(0)
+            pdf_path = await convert_uploaded_file(file)
             if not pdf_path:
                 return JSONResponse(
                     status_code=400,
@@ -192,54 +228,93 @@ async def upload_file(file: UploadFile = File(...)):
             
             # Upload the converted PDF
             pdf_filename = f"{file.filename.split('.')[0]}.pdf"
-            with open(pdf_path, 'rb') as pdf_file:
-                blob_client = container_client.get_blob_client(pdf_filename)
-                blob_client.upload_blob(pdf_file.read(), overwrite=True)
-            
-            # Process with Form Recognizer
-            with open(pdf_path, 'rb') as pdf_file:
-                contents = pdf_file.read()
-            
-            # Clean up temp PDF
-            os.unlink(pdf_path)
+            try:
+                with open(pdf_path, 'rb') as pdf_file:
+                    blob_client = container_client.get_blob_client(pdf_filename)
+                    blob_client.upload_blob(pdf_file.read(), overwrite=True)
+                
+                # Process with Form Recognizer
+                with open(pdf_path, 'rb') as pdf_file:
+                    contents = pdf_file.read()
+                
+                # Clean up temp PDF
+                os.unlink(pdf_path)
+            except Exception as e:
+                # Ensure cleanup happens even if error occurs
+                if os.path.exists(pdf_path):
+                    os.unlink(pdf_path)
+                raise e
         
         # Handle direct PDF uploads
         elif file_ext == 'pdf':
+            # Reset file pointer before reading
+            await file.seek(0)
             contents = await file.read()
+            
+            # Upload to blob storage
             blob_client = container_client.get_blob_client(file.filename)
             blob_client.upload_blob(contents, overwrite=True)
-        else:
-            return JSONResponse(
-                status_code=400,
-                content={"error": "Only PDF and Word documents are allowed"}
-            )
 
         # Process with Form Recognizer
-        poller = form_client.begin_analyze_document("prebuilt-document", contents)
-        result = poller.result()
-        extracted_text = ""
-        for page in result.pages:
-            for line in page.lines:
-                extracted_text += line.content + "\n"
+        try:
+            poller = form_client.begin_analyze_document("prebuilt-document", contents)
+            result = poller.result()
+            extracted_text = ""
+            
+            # Check if result has pages
+            if hasattr(result, 'pages') and result.pages:
+                for page in result.pages:
+                    if hasattr(page, 'lines') and page.lines:
+                        for line in page.lines:
+                            extracted_text += line.content + "\n"
+            
+            # Fallback to content if pages not available
+            if not extracted_text and hasattr(result, 'content'):
+                extracted_text = result.content
+            
+            if not extracted_text:
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "No text could be extracted from the document"}
+                )
         
+        except Exception as form_error:
+            print(f"Form Recognizer error: {str(form_error)}")
+            return JSONResponse(
+                status_code=500,
+                content={"error": f"Document analysis failed: {str(form_error)}"}
+            )
+
         # Store in document store
         document_store.set(extracted_text)
 
-        # Also index in Azure Search
-        doc_id = str(uuid4())
-        document = {
-            "id": doc_id,
-            "filename": file.filename,
-            "text": extracted_text,
-            "uploaded_at": datetime.utcnow().isoformat()
-        }
-        upload_result = search_client.upload_documents(documents=[document])
-        if not upload_result[0].succeeded:
-            print(f"Warning: Indexing failed: {upload_result[0].error_message}")
-
-        return {"message": "File uploaded and processed successfully."}
+        # Index in Azure Search (with error handling)
+        try:
+            doc_id = str(uuid4())
+            document = {
+                "id": doc_id,
+                "filename": file.filename,
+                "text": extracted_text[:50000],  # Truncate if too long
+                "uploaded_at": datetime.utcnow().isoformat()
+            }
+            upload_result = search_client.upload_documents(documents=[document])
+            if upload_result and len(upload_result) > 0 and not upload_result[0].succeeded:
+                print(f"Warning: Indexing failed: {upload_result[0].error_message}")
+        except Exception as search_error:
+            print(f"Search indexing error: {str(search_error)}")
+            # Don't fail the entire upload if search indexing fails
+        
+        return JSONResponse(
+            status_code=200,
+            content={
+                "message": "File uploaded and processed successfully",
+                "filename": file.filename,
+                "text_length": len(extracted_text)
+            }
+        )
 
     except Exception as e:
+        print(f"Upload error: {str(e)}")
         return JSONResponse(
             status_code=500,
             content={"error": f"Processing failed: {str(e)}"}
