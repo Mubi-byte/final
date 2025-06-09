@@ -26,7 +26,7 @@ from uuid import uuid4
 
 
 # Load environment variables
-load_dotenv(.env)
+load_dotenv('.env')
 
 # Validate required environment variables
 required_env_vars = [
