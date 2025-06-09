@@ -350,7 +350,7 @@ async def debug_env():
     }
 
 # Serve static files if frontend exists
-if os.path.exists("frontend/build"):
+if os.path.exists("frontend/build/static"):
     app.mount("/static", StaticFiles(directory="frontend/build/static"), name="static")
 
 @app.get("/{full_path:path}")
