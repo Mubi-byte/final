@@ -26,7 +26,7 @@ from uuid import uuid4
 
 
 # Load environment variables
-load_dotenv('.env')
+load_dotenv()
 
 # Validate required environment variables
 required_env_vars = [
@@ -359,11 +359,21 @@ async def serve_frontend(full_path: str):
     if full_path.startswith("api/"):
         return JSONResponse({"error": "API route not found"}, status_code=404)
     
+    # Handle root path or empty path
+    if not full_path or full_path == "/":
+        if os.path.exists("frontend/build/index.html"):
+            return FileResponse("frontend/build/index.html")
+        else:
+            return JSONResponse({"error": "Frontend not found"}, status_code=404)
+    
+    # Build the file path
     file_path = f"frontend/build/{full_path}"
-    if os.path.exists(file_path):
+    
+    # Only serve if it's actually a file (not a directory)
+    if os.path.exists(file_path) and os.path.isfile(file_path):
         return FileResponse(file_path)
     
-    # Default to serving the index.html for any unmatched route
+    # For any unmatched route, default to serving index.html (SPA routing)
     if os.path.exists("frontend/build/index.html"):
         return FileResponse("frontend/build/index.html")
     else:
