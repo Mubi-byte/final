@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+pydantic
+azure-ai-formrecognizer
+azure-core
+azure-storage-blob
+azure-data-tables
+openai
+pyotp
+qrcode
+bcrypt
+python-dotenv
+azure-search-documents
+docx2pdf
