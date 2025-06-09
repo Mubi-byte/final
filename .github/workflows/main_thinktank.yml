@@ -1,67 +1,74 @@
 # Docs for the Azure Web Apps Deploy action: https://github.com/Azure/webapps-deploy
 # More GitHub Actions for Azure: https://github.com/Azure/actions
 # More info on Python, GitHub Actions, and Azure App Service: https://aka.ms/python-webapps-actions
-
 name: Build and deploy Python app to Azure Web App - Thinktank
-
 on:
   push:
     branches:
       - main
   workflow_dispatch:
-
 jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
       contents: read #This is required for actions/checkout
-
     steps:
       - uses: actions/checkout@v4
-
+      
       - name: Set up Python version
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
-      - name: Create and start virtual environment
+      
+      # Fix: Activate venv and install dependencies in single step
+      - name: Create virtual environment and install dependencies
         run: |
           python -m venv venv
           source venv/bin/activate
+          pip install -r requirements.txt
       
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      #Setup Node.js for frontend build
+      # Setup Node.js for frontend build
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '18'
           cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
-
-      - name: Install frontend dependencies
-        run: |
-            cd frontend
-            npm install
       
-      - name: Build frontend
+      - name: Install frontend dependencies and build
         run: |
-         cd frontend
-         npm run build
-        
+          cd frontend
+          npm install
+          npm run build
+          ls -la build/  # Debug: check if build folder exists
+      
       # Optional: Add step to run tests here (PyTest, Django test suites, etc.)
-
-      - name: Zip artifact for deployment
-        run: zip release.zip ./* -r
-
+      
+      # Fix: Create deployment package with proper structure
+      - name: Create deployment package
+        run: |
+          # Remove existing venv to reduce size
+          rm -rf venv
+          
+          # Create fresh venv for deployment
+          python -m venv venv
+          source venv/bin/activate
+          pip install -r requirements.txt
+          
+          # Verify frontend build exists
+          if [ ! -d "frontend/build" ]; then
+            echo "Frontend build directory not found!"
+            exit 1
+          fi
+          
+          # Create zip excluding unnecessary files
+          zip -r release.zip . -x "*.git*" "node_modules/*" "frontend/node_modules/*" "*.pyc" "__pycache__/*"
+      
       - name: Upload artifact for deployment jobs
         uses: actions/upload-artifact@v4
         with:
           name: python-app
-          path: |
-            release.zip
-            !venv/
+          path: release.zip
 
   deploy:
     runs-on: ubuntu-latest
@@ -75,10 +82,11 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: python-app
-
+      
       - name: Unzip artifact for deployment
-        run: unzip release.zip
-
+        run: |
+          unzip release.zip
+          ls -la frontend/build/  # Debug: verify build files exist
       
       - name: 'Deploy to Azure Web App'
         uses: azure/webapps-deploy@v3
