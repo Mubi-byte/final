@@ -178,6 +178,13 @@ def convert_uploaded_file(file: UploadFile) -> Optional[str]:
 
 @app.post("/upload")
 async def upload_file(file: UploadFile = File(...)):
+    # Validate file extension first
+    if not file.filename:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "No filename provided", "success": False}
+        )
+    
     file_ext = file.filename.lower().split('.')[-1]
     
     try:
@@ -187,7 +194,7 @@ async def upload_file(file: UploadFile = File(...)):
             if not pdf_path:
                 return JSONResponse(
                     status_code=400,
-                    content={"error": "Failed to convert Word document to PDF"}
+                    content={"error": "Failed to convert Word document to PDF", "success": False}
                 )
             
             # Upload the converted PDF
@@ -211,42 +218,74 @@ async def upload_file(file: UploadFile = File(...)):
         else:
             return JSONResponse(
                 status_code=400,
-                content={"error": "Only PDF and Word documents are allowed"}
+                content={"error": "Only PDF and Word documents are allowed", "success": False}
+            )
+
+        # Validate contents before processing
+        if not contents:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "File appears to be empty", "success": False}
             )
 
         # Process with Form Recognizer
-        poller = form_client.begin_analyze_document("prebuilt-document", contents)
-        result = poller.result()
-        extracted_text = ""
-        for page in result.pages:
-            for line in page.lines:
-                extracted_text += line.content + "\n"
+        try:
+            poller = form_client.begin_analyze_document("prebuilt-document", contents)
+            result = poller.result()
+            
+            extracted_text = ""
+            for page in result.pages:
+                for line in page.lines:
+                    extracted_text += line.content + "\n"
+            
+            if not extracted_text.strip():
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "No text could be extracted from the document", "success": False}
+                )
+            
+        except Exception as form_error:
+            print(f"Form Recognizer error: {str(form_error)}")
+            return JSONResponse(
+                status_code=500,
+                content={"error": f"Document analysis failed: {str(form_error)}", "success": False}
+            )
         
         # Store in document store
         document_store.set(extracted_text)
 
         # Also index in Azure Search
-        doc_id = str(uuid4())
-        document = {
-            "id": doc_id,
-            "filename": file.filename,
-            "text": extracted_text,
-            "uploaded_at": datetime.utcnow().isoformat()
-        }
-        upload_result = search_client.upload_documents(documents=[document])
-        if not upload_result[0].succeeded:
-            print(f"Warning: Indexing failed: {upload_result[0].error_message}")
+        try:
+            doc_id = str(uuid4())
+            document = {
+                "id": doc_id,
+                "filename": file.filename,
+                "text": extracted_text,
+                "uploaded_at": datetime.utcnow().isoformat()
+            }
+            upload_result = search_client.upload_documents(documents=[document])
+            if not upload_result[0].succeeded:
+                print(f"Warning: Indexing failed: {upload_result[0].error_message}")
+        except Exception as search_error:
+            print(f"Search indexing error: {str(search_error)}")
+            # Don't fail the upload if search indexing fails
 
+        # Return success response - ensure it's properly formatted
         return JSONResponse(
-          status_code=200,
-         content={"message": "File uploaded and processed successfully."}
-)
-
+            status_code=200,
+            content={
+                "message": "File uploaded and processed successfully",
+                "filename": file.filename,
+                "text_length": len(extracted_text),
+                "success": True
+            }
+        )
 
     except Exception as e:
+        print(f"Upload error: {str(e)}")
         return JSONResponse(
             status_code=500,
-            content={"error": f"Processing failed: {str(e)}"}
+            content={"error": f"Processing failed: {str(e)}", "success": False}
         )
 
 # Authentication Endpoints
