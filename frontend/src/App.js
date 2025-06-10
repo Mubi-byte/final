@@ -121,16 +121,20 @@ export default function App() {
       }
 
       if (data.success || !data.error) {
-        setUploadSuccess(true);
-        toast.success(data.message || "Document uploaded successfully!");
-        // Update the chat with upload confirmation
-        setMessages(prev => [...prev, {
-          role: "assistant",
-          content: "I've successfully processed your document. Ask me anything about it!"
-        }]);
-      } else {
-        toast.error(data.message || data.error || "Upload failed");
-      }
+    setUploadSuccess(true);
+    toast.success(data.message || "Document uploaded successfully!");
+
+    setMessages(prev => [
+        ...prev,
+        {
+            role: "assistant",
+            content: `I've successfully uploaded your document.\n\n
+            What specific details do you need from this proposal? I can summarize key aspects like technology requirements, user scale, and compliance needs, or provide a detailed breakdown of pain points and actionable tasks.\n\n
+            Additionally, I can outline key action items for responding to this RFP, including timelines and ownership assignments.\n\n
+            Let me know how you'd like to proceed!`
+        }
+    ]);
+}
     } catch (error) {
       console.error("Upload error:", error);
       toast.error("Upload error: " + error.message);
