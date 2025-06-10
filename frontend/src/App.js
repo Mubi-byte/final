@@ -2,7 +2,6 @@ import React, { useState } from "react";
 import toast, { Toaster } from "react-hot-toast";
 import { FaFileUpload, FaUserCircle, FaQuestionCircle } from "react-icons/fa";
 import thinkTankLogo from "./thinktankblue_logo.png";
-//import ReactMarkdown from 'react-markdown';
 
 // Dynamic API Base URL function
 const getApiBaseUrl = () => {
@@ -82,7 +81,7 @@ export default function App() {
     }
   };
 
-  // File upload handler
+  // File upload handler (UPDATED)
   const handleUpload = async (event) => {
     const file = event.target.files[0];
     if (!file || !accessToken) {
@@ -105,15 +104,35 @@ export default function App() {
         method: "POST",
         body: formData,
       });
-      const data = await res.json();
+      
+      // First check if the response is OK
+      if (!res.ok) {
+        throw new Error(`HTTP error! status: ${res.status}`);
+      }
+      
+      // Then try to parse as JSON
+      let data;
+      try {
+        data = await res.json();
+      } catch (e) {
+        // If JSON parsing fails, use a default message
+        console.error("JSON parse error:", e);
+        data = { message: "File uploaded successfully", success: true };
+      }
 
-      if (res.ok) {
+      if (data.success || !data.error) {
         setUploadSuccess(true);
-        toast.success("Document uploaded!");
+        toast.success(data.message || "Document uploaded successfully!");
+        // Update the chat with upload confirmation
+        setMessages(prev => [...prev, {
+          role: "assistant",
+          content: "I've successfully processed your document. Ask me anything about it!"
+        }]);
       } else {
-        toast.error(data.error || "Upload failed");
+        toast.error(data.message || data.error || "Upload failed");
       }
     } catch (error) {
+      console.error("Upload error:", error);
       toast.error("Upload error: " + error.message);
     } finally {
       setUploading(false);
@@ -451,7 +470,7 @@ export default function App() {
                 <input
                   id="file-upload"
                   type="file"
-                  accept=".pdf"
+                  accept=".pdf,.docx,.doc"
                   onChange={handleUpload}
                   style={{ display: "none" }}
                 />
